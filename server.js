@@ -88,12 +88,12 @@ app.get('/api/auth/poll', (req, res) => {
     res.json({ success: false, status: 'pending' });
 });
 
-// --- API: ЗАКАЗЫ (ОБНОВЛЕННЫЙ БЛОК) ---
+// --- API: ЗАКАЗЫ (ИСПРАВЛЕННЫЙ БЛОК) ---
 app.post('/api/order', async (req, res) => {
     const { cart, contacts } = req.body;
     if (!cart || !contacts) return res.status(400).json({ error: 'Нет данных' });
 
-    // Формируем сообщение
+    // Формируем текст сообщения
     let message = `<b>🎣 Новый заказ "РыбоедЪ"!</b>\n\n`;
     message += `👤 <b>Клиент:</b> ${contacts.name}\n`;
     if (contacts.telegram_id) message += `🔗 <b>Профиль:</b> <a href="tg://user?id=${contacts.telegram_id}">Открыть чат</a>\n`;
@@ -110,30 +110,30 @@ app.post('/api/order', async (req, res) => {
     message += `\n💰 <b>ИТОГО: ${totalSum} ₽</b>`;
 
     try {
-        // 1. Отправляем в Telegram
+        // 1. Рассылка админам (каждому по отдельности)
         const adminIds = process.env.ADMIN_ID ? process.env.ADMIN_ID.split(',') : [];
         
         for (const id of adminIds) {
             const trimmedId = id.trim();
             if (trimmedId) {
                 try {
-                    // Обернули в персональный try-catch, чтобы ошибка одного ID не ломала всё
+                    // Оборачиваем отправку конкретному человеку
                     await bot.telegram.sendMessage(trimmedId, message, { parse_mode: 'HTML' });
                 } catch (tgErr) {
-                    console.error(`Ошибка отправки админу ${trimmedId}:`, tgErr.message);
+                    // Если один админ забанил бота, сервер просто запишет ошибку в лог и пойдет дальше
+                    console.error(`⚠️ Не удалось отправить админу ${trimmedId}:`, tgErr.message);
                 }
             }
         }
         
-        // 2. СРАЗУ отправляем успех сайту ПОСЛЕ цикла отправки
+        // 2. ОТВЕТ САЙТУ (теперь он сработает всегда после цикла)
         console.log(`✅ Обработка заказа для ${contacts.name} завершена.`);
         return res.json({ success: true });
 
     } catch (error) {
-        console.error('❌ Критическая ошибка при обработке заказа:', error);
-        
+        console.error('❌ Критическая ошибка сервера:', error);
         if (!res.headersSent) {
-            return res.status(500).json({ success: false, error: 'Ошибка сервера' });
+            return res.status(500).json({ success: false, error: 'Внутренняя ошибка сервера' });
         }
     }
 });
