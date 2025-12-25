@@ -11,6 +11,32 @@ const PORT = process.env.PORT || 3000;
 const pendingLogins = {};
 let botUsername = '';
 
+// --- НАСТРОЙКА CORS (БЕЗ ВНЕШНИХ ПАКЕТОВ) ---
+const allowedOrigins = [
+    'https://рыбоедвыборг.рф',
+    'https://xn--90aacfcf6delh7if.xn--p1ai'
+];
+
+app.use((req, res, next) => {
+    const origin = req.headers.origin;
+    
+    // Проверяем, входит ли источник запроса в белый список
+    if (allowedOrigins.includes(origin)) {
+        res.setHeader('Access-Control-Allow-Origin', origin);
+        res.setHeader('Vary', 'Origin');
+        res.setHeader('Access-Control-Allow-Credentials', 'true');
+    }
+
+    // Обработка Preflight-запросов (OPTIONS)
+    if (req.method === 'OPTIONS') {
+        res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
+        res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+        return res.sendStatus(204); // Отправляем 204 No Content и прерываем цепочку для OPTIONS
+    }
+
+    next();
+});
+
 // --- НАСТРОЙКА EXPRESS ---
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
@@ -38,7 +64,7 @@ bot.start((ctx) => {
     ctx.reply(`Добро пожаловать в магазин "РыбоедЪ"! 🐟\nВаш ID: ${ctx.from.id}`);
 });
 
-// ФИНАЛЬНЫЙ ЗАПУСК БОТА (Твоя правка)
+// ФИНАЛЬНЫЙ ЗАПУСК БОТА
 (async () => {
   try {
     await bot.telegram.deleteWebhook({ drop_pending_updates: true });
