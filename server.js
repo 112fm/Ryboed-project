@@ -11,7 +11,7 @@ const PORT = process.env.PORT || 3000;
 const pendingLogins = {};
 let botUsername = '';
 
-// --- НАСТРОЙКА CORS (БЕЗ ВНЕШНИХ ПАКЕТОВ) ---
+// --- НАСТРОЙКА CORS ---
 const allowedOrigins = [
     'https://рыбоедвыборг.рф',
     'https://xn--90aacfcf6delh7if.xn--p1ai'
@@ -19,30 +19,24 @@ const allowedOrigins = [
 
 app.use((req, res, next) => {
     const origin = req.headers.origin;
-    
-    // Проверяем, входит ли источник запроса в белый список
     if (allowedOrigins.includes(origin)) {
         res.setHeader('Access-Control-Allow-Origin', origin);
         res.setHeader('Vary', 'Origin');
         res.setHeader('Access-Control-Allow-Credentials', 'true');
     }
 
-    // Обработка Preflight-запросов (OPTIONS)
     if (req.method === 'OPTIONS') {
         res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,PATCH,DELETE,OPTIONS');
         res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-        return res.sendStatus(204); // Отправляем 204 No Content и прерываем цепочку для OPTIONS
+        return res.sendStatus(204);
     }
-
     next();
 });
 
-// --- НАСТРОЙКА EXPRESS ---
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// --- НАСТРОЙКА TELEGRAM БОТА ---
-
+// --- НАСТРОЙКА ТЕЛЕГРАМ БОТА ---
 bot.telegram.getMe().then((botInfo) => {
     botUsername = botInfo.username;
     console.log(`✅ Бот @${botUsername} готов к работе.`);
@@ -64,7 +58,6 @@ bot.start((ctx) => {
     ctx.reply(`Добро пожаловать в магазин "РыбоедЪ"! 🐟\nВаш ID: ${ctx.from.id}`);
 });
 
-// ФИНАЛЬНЫЙ ЗАПУСК БОТА
 (async () => {
   try {
     await bot.telegram.deleteWebhook({ drop_pending_updates: true });
@@ -76,7 +69,6 @@ bot.start((ctx) => {
 })();
 
 // --- API: АВТОРИЗАЦИЯ ---
-
 app.get('/api/auth/init', (req, res) => {
     const code = crypto.randomBytes(4).toString('hex');
     pendingLogins[code] = { status: 'pending' };
@@ -96,12 +88,12 @@ app.get('/api/auth/poll', (req, res) => {
     res.json({ success: false, status: 'pending' });
 });
 
-// --- API: ЗАКАЗЫ ---
-
+// --- API: ЗАКАЗЫ (ИСПРАВЛЕННЫЙ БЛОК) ---
 app.post('/api/order', async (req, res) => {
     const { cart, contacts } = req.body;
     if (!cart || !contacts) return res.status(400).json({ error: 'Нет данных' });
 
+    // Формируем сообщение
     let message = `<b>🎣 Новый заказ "РыбоедЪ"!</b>\n\n`;
     message += `👤 <b>Клиент:</b> ${contacts.name}\n`;
     if (contacts.telegram_id) message += `🔗 <b>Профиль:</b> <a href="tg://user?id=${contacts.telegram_id}">Открыть чат</a>\n`;
@@ -118,14 +110,26 @@ app.post('/api/order', async (req, res) => {
     message += `\n💰 <b>ИТОГО: ${totalSum} ₽</b>`;
 
     try {
-        const adminIds = process.env.ADMIN_ID.split(',');
+        // 1. Отправляем в Telegram
+        const adminIds = process.env.ADMIN_ID ? process.env.ADMIN_ID.split(',') : [];
         for (const id of adminIds) {
-            if (id.trim()) await bot.telegram.sendMessage(id.trim(), message, { parse_mode: 'HTML' });
+            const trimmedId = id.trim();
+            if (trimmedId) {
+                await bot.telegram.sendMessage(trimmedId, message, { parse_mode: 'HTML' });
+            }
         }
-        res.json({ success: true });
+        
+        // 2. СРАЗУ отправляем успех сайту
+        console.log(`✅ Заказ для ${contacts.name} отправлен в Telegram.`);
+        return res.json({ success: true });
+
     } catch (error) {
-        console.error(error);
-        res.status(500).json({ success: false });
+        console.error('❌ Ошибка при отправке заказа:', error);
+        
+        // Отправляем ошибку только если мы еще не успели отправить ответ
+        if (!res.headersSent) {
+            return res.status(500).json({ success: false, error: 'Ошибка сервера при отправке заказа' });
+        }
     }
 });
 
