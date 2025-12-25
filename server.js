@@ -88,7 +88,7 @@ app.get('/api/auth/poll', (req, res) => {
     res.json({ success: false, status: 'pending' });
 });
 
-// --- API: ЗАКАЗЫ (ИСПРАВЛЕННЫЙ БЛОК) ---
+// --- API: ЗАКАЗЫ (ОБНОВЛЕННЫЙ БЛОК) ---
 app.post('/api/order', async (req, res) => {
     const { cart, contacts } = req.body;
     if (!cart || !contacts) return res.status(400).json({ error: 'Нет данных' });
@@ -112,23 +112,28 @@ app.post('/api/order', async (req, res) => {
     try {
         // 1. Отправляем в Telegram
         const adminIds = process.env.ADMIN_ID ? process.env.ADMIN_ID.split(',') : [];
+        
         for (const id of adminIds) {
             const trimmedId = id.trim();
             if (trimmedId) {
-                await bot.telegram.sendMessage(trimmedId, message, { parse_mode: 'HTML' });
+                try {
+                    // Обернули в персональный try-catch, чтобы ошибка одного ID не ломала всё
+                    await bot.telegram.sendMessage(trimmedId, message, { parse_mode: 'HTML' });
+                } catch (tgErr) {
+                    console.error(`Ошибка отправки админу ${trimmedId}:`, tgErr.message);
+                }
             }
         }
         
-        // 2. СРАЗУ отправляем успех сайту
-        console.log(`✅ Заказ для ${contacts.name} отправлен в Telegram.`);
+        // 2. СРАЗУ отправляем успех сайту ПОСЛЕ цикла отправки
+        console.log(`✅ Обработка заказа для ${contacts.name} завершена.`);
         return res.json({ success: true });
 
     } catch (error) {
-        console.error('❌ Ошибка при отправке заказа:', error);
+        console.error('❌ Критическая ошибка при обработке заказа:', error);
         
-        // Отправляем ошибку только если мы еще не успели отправить ответ
         if (!res.headersSent) {
-            return res.status(500).json({ success: false, error: 'Ошибка сервера при отправке заказа' });
+            return res.status(500).json({ success: false, error: 'Ошибка сервера' });
         }
     }
 });
