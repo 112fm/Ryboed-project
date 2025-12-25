@@ -8,10 +8,11 @@ const app = express();
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const PORT = process.env.PORT || 3000;
 
+// Хранилище временных сессий для авторизации
 const pendingLogins = {};
 let botUsername = '';
 
-// --- НАСТРОЙКА CORS ---
+// --- 1. НАСТРОЙКА CORS (Разрешаем запросы только с твоего домена) ---
 const allowedOrigins = [
     'https://рыбоедвыборг.рф',
     'https://xn--90aacfcf6delh7if.xn--p1ai'
@@ -36,14 +37,20 @@ app.use((req, res, next) => {
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// --- НАСТРОЙКА ТЕЛЕГРАМ БОТА ---
+// --- 2. ЛОГИКА ТЕЛЕГРАМ БОТА ---
+
+// Получаем имя бота для ссылок
 bot.telegram.getMe().then((botInfo) => {
     botUsername = botInfo.username;
     console.log(`✅ Бот @${botUsername} готов к работе.`);
 });
 
+// Новое приветствие с поддержкой Mini App и авторизации
 bot.start((ctx) => {
-    const payload = ctx.startPayload;
+    const payload = ctx.startPayload; // Код авторизации
+    const firstName = ctx.from.first_name || 'гость';
+
+    // Сценарий А: Авторизация через сайт (Deep Linking)
     if (payload && pendingLogins[payload]) {
         pendingLogins[payload] = {
             status: 'success',
@@ -53,22 +60,45 @@ bot.start((ctx) => {
                 username: ctx.from.username
             }
         };
-        return ctx.reply(`✅ Авторизация успешна!\nПривет, ${ctx.from.first_name}. Вернитесь на сайт.`);
+
+        return ctx.replyWithHTML(
+            `<b>🤝 С возвращением, ${firstName}!</b>\n\n` +
+            `Вы успешно подтвердили вход в магазин <b>"РыбоедЪ"</b>.\n` +
+            `Теперь вернитесь на сайт — ваш профиль уже готов к заказу. 🐟`
+        );
     }
-    ctx.reply(`Добро пожаловать в магазин "РыбоедЪ"! 🐟\nВаш ID: ${ctx.from.id}`);
+
+    // Сценарий Б: Обычный запуск бота
+    ctx.replyWithHTML(
+        `<b>Приветствуем в "РыбоедЪ", ${firstName}! 🎣</b>\n\n` +
+        `Здесь самые свежие морепродукты и деликатесы с доставкой прямо к вашему столу.\n\n` +
+        `🛒 <b>Наш сайт:</b> <a href="https://рыбоедвыборг.рф">рыбоедвыборг.рф</a>\n` +
+        `📍 <b>Выборг:</b> доставка и самовывоз.\n\n` +
+        `<i>Нажмите на кнопку ниже, чтобы открыть магазин прямо здесь!</i>`,
+        {
+            reply_markup: {
+                inline_keyboard: [
+                    [{ text: "🛍 Открыть магазин", web_app: { url: "https://рыбоедвыборг.рф" } }]
+                ]
+            }
+        }
+    );
 });
 
+// Безопасный запуск бота (сброс старых вебхуков)
 (async () => {
-  try {
-    await bot.telegram.deleteWebhook({ drop_pending_updates: true });
-    await bot.launch();
-    console.log('🤖 Бот запущен (polling mode)');
-  } catch (err) {
-    console.error('❌ Ошибка запуска бота:', err);
-  }
+    try {
+        await bot.telegram.deleteWebhook({ drop_pending_updates: true });
+        await bot.launch();
+        console.log('🤖 Бот запущен в режиме Long Polling');
+    } catch (err) {
+        console.error('❌ Ошибка запуска бота:', err);
+    }
 })();
 
-// --- API: АВТОРИЗАЦИЯ ---
+// --- 3. API ЭНДПОИНТЫ ---
+
+// Инициализация входа
 app.get('/api/auth/init', (req, res) => {
     const code = crypto.randomBytes(4).toString('hex');
     pendingLogins[code] = { status: 'pending' };
@@ -76,24 +106,25 @@ app.get('/api/auth/init', (req, res) => {
     res.json({ code, botLink });
 });
 
+// Проверка статуса входа (Polling)
 app.get('/api/auth/poll', (req, res) => {
     const { code } = req.query;
     const session = pendingLogins[code];
-    if (!session) return res.json({ success: false, error: 'Expired' });
+    if (!session) return res.json({ success: false, error: 'Сессия истекла' });
+    
     if (session.status === 'success') {
         const userData = session.user;
-        delete pendingLogins[code];
+        delete pendingLogins[code]; // Удаляем после успешного входа
         return res.json({ success: true, user: userData });
     }
     res.json({ success: false, status: 'pending' });
 });
 
-// --- API: ЗАКАЗЫ (ИСПРАВЛЕННЫЙ БЛОК) ---
+// Прием заказов
 app.post('/api/order', async (req, res) => {
     const { cart, contacts } = req.body;
     if (!cart || !contacts) return res.status(400).json({ error: 'Нет данных' });
 
-    // Формируем текст сообщения
     let message = `<b>🎣 Новый заказ "РыбоедЪ"!</b>\n\n`;
     message += `👤 <b>Клиент:</b> ${contacts.name}\n`;
     if (contacts.telegram_id) message += `🔗 <b>Профиль:</b> <a href="tg://user?id=${contacts.telegram_id}">Открыть чат</a>\n`;
@@ -110,35 +141,33 @@ app.post('/api/order', async (req, res) => {
     message += `\n💰 <b>ИТОГО: ${totalSum} ₽</b>`;
 
     try {
-        // 1. Рассылка админам (каждому по отдельности)
         const adminIds = process.env.ADMIN_ID ? process.env.ADMIN_ID.split(',') : [];
         
         for (const id of adminIds) {
             const trimmedId = id.trim();
             if (trimmedId) {
                 try {
-                    // Оборачиваем отправку конкретному человеку
                     await bot.telegram.sendMessage(trimmedId, message, { parse_mode: 'HTML' });
                 } catch (tgErr) {
-                    // Если один админ забанил бота, сервер просто запишет ошибку в лог и пойдет дальше
                     console.error(`⚠️ Не удалось отправить админу ${trimmedId}:`, tgErr.message);
                 }
             }
         }
         
-        // 2. ОТВЕТ САЙТУ (теперь он сработает всегда после цикла)
-        console.log(`✅ Обработка заказа для ${contacts.name} завершена.`);
+        console.log(`✅ Заказ для ${contacts.name} успешно обработан.`);
         return res.json({ success: true });
 
     } catch (error) {
-        console.error('❌ Критическая ошибка сервера:', error);
+        console.error('❌ Критическая ошибка при обработке заказа:', error);
         if (!res.headersSent) {
-            return res.status(500).json({ success: false, error: 'Внутренняя ошибка сервера' });
+            return res.status(500).json({ success: false, error: 'Ошибка сервера' });
         }
     }
 });
 
-app.listen(PORT, () => console.log(`🚀 Сервер на порту ${PORT}`));
+// --- 4. ЗАПУСК СЕРВЕРА ---
+app.listen(PORT, () => console.log(`🚀 Сервер запущен на порту ${PORT}`));
 
+// Корректное завершение работы
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
