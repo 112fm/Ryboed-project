@@ -3,16 +3,16 @@ const express = require('express');
 const { Telegraf } = require('telegraf');
 const path = require('path');
 const crypto = require('crypto');
+const fetch = require('node-fetch'); // Для загрузки CSV
 
 const app = express();
 const bot = new Telegraf(process.env.BOT_TOKEN);
 const PORT = process.env.PORT || 3000;
 
-// Хранилище временных сессий для авторизации
 const pendingLogins = {};
 let botUsername = '';
 
-// --- 1. НАСТРОЙКА CORS (Разрешаем запросы только с твоего домена) ---
+// --- НАСТРОЙКА CORS ---
 const allowedOrigins = [
     'https://рыбоедвыборг.рф',
     'https://xn--90aacfcf6delh7if.xn--p1ai'
@@ -37,20 +37,14 @@ app.use((req, res, next) => {
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// --- 2. ЛОГИКА ТЕЛЕГРАМ БОТА ---
-
-// Получаем имя бота для ссылок
+// --- НАСТРОЙКА ТЕЛЕГРАМ БОТА ---
 bot.telegram.getMe().then((botInfo) => {
     botUsername = botInfo.username;
     console.log(`✅ Бот @${botUsername} готов к работе.`);
 });
 
-// Новое приветствие с поддержкой Mini App и авторизации
 bot.start((ctx) => {
-    const payload = ctx.startPayload; // Код авторизации
-    const firstName = ctx.from.first_name || 'гость';
-
-    // Сценарий А: Авторизация через сайт (Deep Linking)
+    const payload = ctx.startPayload;
     if (payload && pendingLogins[payload]) {
         pendingLogins[payload] = {
             status: 'success',
@@ -60,45 +54,22 @@ bot.start((ctx) => {
                 username: ctx.from.username
             }
         };
-
-        return ctx.replyWithHTML(
-            `<b>🤝 С возвращением, ${firstName}!</b>\n\n` +
-            `Вы успешно подтвердили вход в магазин <b>"РыбоедЪ"</b>.\n` +
-            `Теперь вернитесь на сайт — ваш профиль уже готов к заказу. 🐟`
-        );
+        return ctx.reply(`✅ Авторизация успешна!\nПривет, ${ctx.from.first_name}. Вернитесь на сайт.`);
     }
-
-    // Сценарий Б: Обычный запуск бота
-    ctx.replyWithHTML(
-        `<b>Приветствуем в "РыбоедЪ", ${firstName}! 🎣</b>\n\n` +
-        `Здесь самые свежие морепродукты и деликатесы с доставкой прямо к вашему столу.\n\n` +
-        `🛒 <b>Наш сайт:</b> <a href="https://рыбоедвыборг.рф">рыбоедвыборг.рф</a>\n` +
-        `📍 <b>Выборг:</b> доставка и самовывоз.\n\n` +
-        `<i>Нажмите на кнопку ниже, чтобы открыть магазин прямо здесь!</i>`,
-        {
-            reply_markup: {
-                inline_keyboard: [
-                    [{ text: "🛍 Открыть магазин", web_app: { url: "https://рыбоедвыборг.рф" } }]
-                ]
-            }
-        }
-    );
+    ctx.reply(`Добро пожаловать в магазин "РыбоедЪ"! 🐟\nВаш ID: ${ctx.from.id}`);
 });
 
-// Безопасный запуск бота (сброс старых вебхуков)
 (async () => {
-    try {
-        await bot.telegram.deleteWebhook({ drop_pending_updates: true });
-        await bot.launch();
-        console.log('🤖 Бот запущен в режиме Long Polling');
-    } catch (err) {
-        console.error('❌ Ошибка запуска бота:', err);
-    }
+  try {
+    await bot.telegram.deleteWebhook({ drop_pending_updates: true });
+    await bot.launch();
+    console.log('🤖 Бот запущен (polling mode)');
+  } catch (err) {
+    console.error('❌ Ошибка запуска бота:', err);
+  }
 })();
 
-// --- 3. API ЭНДПОИНТЫ ---
-
-// Инициализация входа
+// --- API: АВТОРИЗАЦИЯ ---
 app.get('/api/auth/init', (req, res) => {
     const code = crypto.randomBytes(4).toString('hex');
     pendingLogins[code] = { status: 'pending' };
@@ -106,21 +77,59 @@ app.get('/api/auth/init', (req, res) => {
     res.json({ code, botLink });
 });
 
-// Проверка статуса входа (Polling)
 app.get('/api/auth/poll', (req, res) => {
     const { code } = req.query;
     const session = pendingLogins[code];
-    if (!session) return res.json({ success: false, error: 'Сессия истекла' });
-    
+    if (!session) return res.json({ success: false, error: 'Expired' });
     if (session.status === 'success') {
         const userData = session.user;
-        delete pendingLogins[code]; // Удаляем после успешного входа
+        delete pendingLogins[code];
         return res.json({ success: true, user: userData });
     }
     res.json({ success: false, status: 'pending' });
 });
 
-// Прием заказов
+// --- ДОБАВЛЕННЫЙ КОД: ПОЛУЧЕНИЕ ТОВАРОВ ИЗ GOOGLE SHEETS ---
+
+/**
+ * Простой парсер CSV в JSON массив объектов
+ * @param {string} csvText 
+ * @returns {Array<Object>}
+ */
+function parseCSV(csvText) {
+    const lines = csvText.trim().split('\n');
+    const headers = lines[0].split(',').map(h => h.trim());
+    
+    return lines.slice(1).map(line => {
+        const values = line.split(',');
+        const obj = {};
+        headers.forEach((header, index) => {
+            obj[header] = values[index] ? values[index].trim() : "";
+        });
+        return obj;
+    });
+}
+
+app.get('/api/products', async (req, res) => {
+    const CSV_URL = 'https://docs.google.com/spreadsheets/d/e/2PACX-1vReYjI3IL_ejOLztXpQErrzmyoziDQByRbvO2MJrTfOtz_1CW_Yh345u5QbNB2J-1Ekvgy8XIueofsx/pub?gid=0&single=true&output=csv';
+
+    try {
+        const response = await fetch(CSV_URL);
+        if (!response.ok) throw new Error('Ошибка загрузки CSV из Google Sheets');
+        
+        const csvData = await response.text();
+        const jsonData = parseCSV(csvData);
+        
+        res.json(jsonData);
+    } catch (error) {
+        console.error('❌ Ошибка API /api/products:', error.message);
+        res.status(500).json({ success: false, error: 'Не удалось загрузить данные товаров' });
+    }
+});
+
+// --- КОНЕЦ ДОБАВЛЕННОГО КОДА ---
+
+// --- API: ЗАКАЗЫ (ИСПРАВЛЕННЫЙ БЛОК) ---
 app.post('/api/order', async (req, res) => {
     const { cart, contacts } = req.body;
     if (!cart || !contacts) return res.status(400).json({ error: 'Нет данных' });
@@ -154,20 +163,18 @@ app.post('/api/order', async (req, res) => {
             }
         }
         
-        console.log(`✅ Заказ для ${contacts.name} успешно обработан.`);
+        console.log(`✅ Обработка заказа для ${contacts.name} завершена.`);
         return res.json({ success: true });
 
     } catch (error) {
-        console.error('❌ Критическая ошибка при обработке заказа:', error);
+        console.error('❌ Критическая ошибка сервера:', error);
         if (!res.headersSent) {
-            return res.status(500).json({ success: false, error: 'Ошибка сервера' });
+            return res.status(500).json({ success: false, error: 'Внутренняя ошибка сервера' });
         }
     }
 });
 
-// --- 4. ЗАПУСК СЕРВЕРА ---
-app.listen(PORT, () => console.log(`🚀 Сервер запущен на порту ${PORT}`));
+app.listen(PORT, () => console.log(`🚀 Сервер на порту ${PORT}`));
 
-// Корректное завершение работы
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
